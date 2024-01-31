@@ -1,29 +1,114 @@
+#WHEN I HAVE A LOT OF IMAGES IT OVERRIDES IT I HAVE TO FIX THIS
+
+
 from preprocessing import *
 from staff_removal import *
 from helper_methods import *
 
 import argparse
 import os
-import datetime
+import cv2
+import matplotlib.pyplot as plt
+import pickle
+import json
 
-# Initialize parser
+# Initialize the parser
 parser = argparse.ArgumentParser()
-parser.add_argument("inputfolder", help = "Input File")
-parser.add_argument("outputfolder", help = "Output File")
+parser.add_argument("inputfolder", help="Input Folder", default="input", nargs='?')
+parser.add_argument("outputfolder", help="Output Folder", default="output", nargs='?')
 
+# Parse the arguments
 args = parser.parse_args()
-
-with open(f"{args.outputfolder}/Output.txt", "w") as text_file:
-    text_file.write("Input Folder: %s" % args.inputfolder)
-    text_file.write("Output Folder: %s" % args.outputfolder)
-    text_file.write("Date: %s" % datetime.datetime.now())
-
 
 # Threshold for line to be considered as an initial staff line #
 threshold = 0.8
 filename = 'model/model.sav'
 model = pickle.load(open(filename, 'rb'))
 accidentals = ['x', 'hash', 'b', 'symbol_bb', 'd']
+bounding_boxes_dict = {}
+global_counter = 0  # Global counter for image naming
+
+def draw_bounding_boxes(image, boundaries):
+    """
+    Draws bounding boxes on the image without labels.
+    
+    :param image: The image on which to draw.
+    :param boundaries: List of boundary tuples (x1, y1, x2, y2).
+    """
+    for boundary in boundaries:
+        x1, y1, x2, y2 = boundary
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+def save_bounding_box_areas(image, boundaries, labels, outputfolder, base_filename):
+    global global_counter  # Use the global counter
+
+    print(f"Starting to save bounding box areas and context images in {outputfolder}...")
+
+    if not boundaries:
+        print("No boundaries provided to save_bounding_box_areas.")
+        return
+
+    for boundary in boundaries:
+        print(f"Processing boundary with global counter {global_counter}: {boundary}")
+        x1, y1, x2, y2 = boundary
+        cropped_image = image[y1:y2, x1:x2]
+
+        # Check for valid crop
+        if cropped_image.size == 0:
+            print(f"Boundary resulted in an empty crop. Skipping.")
+            continue
+
+        # Save the cropped image
+        bbox_filename = f"smaller_image_{global_counter}.png"
+        bbox_filepath = os.path.join(outputfolder, bbox_filename)
+        print(f"Saving cropped image at {bbox_filepath}")
+        cv2.imwrite(bbox_filepath, cropped_image)
+
+        # Create a copy of the original image for context
+        image_with_context = image.copy()
+
+        # Highlight the specific bounding box in the context image
+        cv2.rectangle(image_with_context, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+        # Save the context image
+        context_filename = f"smaller_image_w_context_{global_counter}.png"
+        context_filepath = os.path.join(outputfolder, context_filename)
+        print(f"Saving context image at {context_filepath}")
+        cv2.imwrite(context_filepath, image_with_context)
+
+        global_counter += 1  # Increment the global counter
+
+    print("Finished saving bounding box areas and context images.")
+
+def process_and_display_image(inputfolder, fn, outputfolder):
+    cutted, clean_image = preprocessing(inputfolder, fn, None)
+    height_before = 0
+    all_boundaries = []
+    all_boundaries_offset_adjusted = []
+
+    for it in range(len(cutted)):
+        symbols_boundaries = segmentation(height_before, cutted[it])
+        symbols_boundaries.sort(key=lambda x: (x[0], x[1]))
+
+        for boundary in symbols_boundaries:
+            [[_, cutted_boundaries], x1, y1, x2, y2] = get_label_cutted_boundaries(boundary, height_before, cutted[it])
+            all_boundaries.extend(cutted_boundaries)
+            all_boundaries_offset_adjusted.append((x1, y1, x2, y2))
+
+        height_before += cutted[it].shape[0]
+
+    # Draw bounding boxes on the cleaned image without labels
+    image_with_boxes = clean_image.copy()
+    draw_bounding_boxes(image_with_boxes, all_boundaries_offset_adjusted)
+
+    # Save the annotated image with line removal in place
+    output_image_filepath = os.path.join(outputfolder, f'annotated_{fn}')
+    cv2.imwrite(output_image_filepath, image_with_boxes)
+
+    print(f"Annotated image saved at {output_image_filepath}")
+
+    # Save bounding box areas as separate images
+    base_filename = os.path.splitext(fn)[0]
+    save_bounding_box_areas(clean_image, all_boundaries_offset_adjusted, [], outputfolder, base_filename)
 
 def preprocessing(inputfolder, fn, f):
       # Get image and its dimensions #
@@ -38,10 +123,10 @@ def preprocessing(inputfolder, fn, f):
     # Get list of cutted buckets and cutting positions #
     cut_positions, cutted = cut_image_into_buckets(cleaned, staff_lines)
     
+    print(cutted)
     # Get reference line for each bucket #
-    ref_lines, lines_spacing = get_ref_lines(cut_positions, staff_lines)
 
-    return cutted, ref_lines, lines_spacing
+    return cutted, cleaned
 
 def get_target_boundaries(label, cur_symbol, y2):
     if label == 'b_8':
@@ -63,7 +148,10 @@ def get_target_boundaries(label, cur_symbol, y2):
 
 def get_label_cutted_boundaries(boundary, height_before, cutted):
     # Get the current symbol #
+    print("Original boundary:", boundary) 
+
     x1, y1, x2, y2 = boundary
+
     cur_symbol = cutted[y1-height_before:y2+1-height_before, x1:x2+1]
 
     # Clean and cut #
@@ -73,84 +161,42 @@ def get_label_cutted_boundaries(boundary, height_before, cutted):
     # Start prediction of the current symbol #
     feature = extract_hog_features(cur_symbol)
     label = str(model.predict([feature])[0])
-
-    return get_target_boundaries(label, cur_symbol, y2)
-
-def process_image(inputfolder, fn, f):
-    cutted, ref_lines, lines_spacing = preprocessing(inputfolder, fn, f)
-
-    last_acc = ''
-    last_num = ''
-    height_before = 0
-
-    if len(cutted) > 1:
-        f.write('{\n')
-
-
-    for it in range(len(cutted)):
-        f.write('[')
-        is_started = False
-        
-
-        symbols_boundaries = segmentation(height_before, cutted[it])
-        symbols_boundaries.sort(key = lambda x: (x[0], x[1]))
-        
-        for boundary in symbols_boundaries:
-            label, cutted_boundaries = get_label_cutted_boundaries(boundary, height_before, cutted[it])
-
-            if label == 'clef':
-                is_started = True
-            
-            for cutted_boundary in cutted_boundaries:
-                _, y1, _, y2 = cutted_boundary
-                if is_started == True and label != 'barline' and label != 'clef':
-                    text = text_operation(label, ref_lines[it], lines_spacing[it], y1, y2)
-                    
-                    if (label == 't_2' or label == 't_4') and last_num == '':
-                        last_num = text
-                    elif label in accidentals:
-                        last_acc = text
-                    else:
-                        if last_acc != '':
-                            text = text[0] + last_acc + text[1:]
-                            last_acc=  ''
-                            
-                        if last_num != '':
-                            text = f'\meter<"{text}/{last_num}">'
-                            last_num =  ''
-                        
-                        not_dot = label != 'dot'
-                        f.write(not_dot * ' ' + text)
-            
-        height_before += cutted[it].shape[0]
-        f.write(' ]\n')
-        
-    if len(cutted) > 1:
-        f.write('}')
+    return [get_target_boundaries(label, cur_symbol, y2), x1, y1, x2, y2]
 
 def main():
-    try: 
-        os.mkdir(args.outputfolder) 
-    except OSError as error:
-        pass
+    saved_images_folder = os.path.join(args.outputfolder, 'saved_images')
+    if not os.path.exists(saved_images_folder):
+        os.makedirs(saved_images_folder)
+    if not os.path.exists(args.outputfolder):
+        try:
+            os.mkdir(args.outputfolder)
+        except OSError as error:
+            print("Error creating output folder:", error)
+            return
+    else:
+        print("Output folder already exists. Using existing folder.")
 
     list_of_images = os.listdir(args.inputfolder)
-    for _, fn in enumerate(list_of_images):
-        # Open the output text file #
-        file_prefix = fn.split('.')[0]
-        f = open(f"{args.outputfolder}/{file_prefix}.txt", "w")
+    for fn in list_of_images:
+        # Check if the file is an image
+        if not fn.lower().endswith(('.png', '.jpg', '.jpeg')):
+            continue
 
-        # Process each image separately #
+        full_path = os.path.join(args.inputfolder, fn)
+        if not os.path.isfile(full_path):
+            print("File does not exist:", fn)
+            continue
+
+        # Process and display each image
         try:
-            process_image(args.inputfolder, fn, f)
+            process_and_display_image(args.inputfolder, fn, saved_images_folder)
         except Exception as e:
             print(e)
-            print(f'{args.inputfolder}-{fn} has been failed !!')
-            pass
-        
-        f.close()  
-    print('Finished !!') 
+            print(f'Processing failed for {fn}')
 
+    print('Processing completed for all images.') 
 
 if __name__ == "__main__":
     main()
+
+
