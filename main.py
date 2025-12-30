@@ -28,10 +28,10 @@ model = pickle.load(open(filename, 'rb'))
 
 def draw_continuous_segments(img, x, top, bottom, cleaned_img, color, thickness):
     """Helper function to draw only continuous black segments of a vertical line"""
-    # Collect all black pixels in this vertical range
+    # Collect all non-white pixels in this vertical range (threshold: < 250)
     black_y = []
     for y in range(top, bottom + 1):
-        if y < cleaned_img.shape[0] and cleaned_img[y, x] == 0:
+        if y < cleaned_img.shape[0] and cleaned_img[y, x] < 250:
             black_y.append(y)
 
     if len(black_y) == 0:
@@ -59,8 +59,8 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
     # Create a color version of the image for visualization
     vis_base = cv2.cvtColor(cleaned_img, cv2.COLOR_GRAY2BGR)
 
-    # Calculate histogram of vertical black pixels
-    col_histogram = np.sum(cleaned_img == 0, axis=0)
+    # Calculate histogram of vertical non-white pixels (< 250)
+    col_histogram = np.sum(cleaned_img < 250, axis=0)
 
     # Find candidate columns with enough black pixels
     threshold_density = height * 0.1  # At least 10% black pixels
@@ -69,14 +69,14 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
         if col_histogram[c] > threshold_density:
             candidate_columns.append(c)
 
-    # STEP 1: Show all candidate columns (only where black pixels exist)
+    # STEP 1: Show all candidate columns (only where non-white pixels exist)
     step1_img = vis_base.copy()
     for c in candidate_columns:
-        # Find continuous segments of black pixels in this column
+        # Find continuous segments of non-white pixels in this column
         in_segment = False
         seg_start = None
         for y in range(height):
-            if cleaned_img[y, c] == 0:  # Black pixel
+            if cleaned_img[y, c] < 250:  # Non-white pixel
                 if not in_segment:
                     seg_start = y
                     in_segment = True
@@ -85,7 +85,7 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
                     # Draw the segment we just finished
                     cv2.line(step1_img, (c, seg_start), (c, y-1), (255, 0, 0), 1)
                     in_segment = False
-        # Draw final segment if we ended on black
+        # Draw final segment if we ended on non-white
         if in_segment:
             cv2.line(step1_img, (c, seg_start), (c, height-1), (255, 0, 0), 1)
     cv2.imwrite(f"{debug_folder}/step1_all_candidates.png", step1_img)
@@ -110,11 +110,11 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
     line_segments_extents = []
     for segment in line_segments:
         line_x = int(np.mean(segment))
-        # Find all continuous black segments for this line
-        black_regions = set()  # Store all y-coordinates that have black pixels
+        # Find all continuous non-white segments for this line
+        black_regions = set()  # Store all y-coordinates that have non-white pixels
         for x in segment:
             for y in range(height):
-                if cleaned_img[y, x] == 0:
+                if cleaned_img[y, x] < 250:
                     black_regions.add(y)
 
         if len(black_regions) > 0:
@@ -144,10 +144,10 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
         for y in range(top, bottom, max(1, (bottom - top) // 5)):
             if y >= height:
                 continue
-            # Count consecutive black pixels horizontally
+            # Count consecutive non-white pixels horizontally
             width_count = 0
             for dx in range(-max_barline_width, max_barline_width):
-                if 0 <= x + dx < width and cleaned_img[y, x + dx] == 0:
+                if 0 <= x + dx < width and cleaned_img[y, x + dx] < 250:
                     width_count += 1
                 else:
                     break
@@ -231,10 +231,10 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
         for y in range(top, bottom):
             if y >= height:
                 continue
-            # Find x position of black pixel near this y
+            # Find x position of non-white pixel near this y
             found = False
             for dx in range(-5, 6):
-                if 0 <= x + dx < width and cleaned_img[y, x + dx] == 0:
+                if 0 <= x + dx < width and cleaned_img[y, x + dx] < 250:
                     x_positions.append(x + dx)
                     found = True
                     break
