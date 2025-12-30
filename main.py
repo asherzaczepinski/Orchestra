@@ -1,6 +1,6 @@
 #WHEN I HAVE A LOT OF IMAGES IT OVERRIDES IT I HAVE TO FIX THIS
 
-
+from classifier import *
 from preprocessing import *
 from staff_removal import *
 from helper_methods import *
@@ -8,110 +8,23 @@ from helper_methods import *
 import argparse
 import os
 import datetime
+import pickle
 import cv2
 import numpy as np
-import shutil
-import matplotlib.pyplot as plt
-import pickle
-import json
 
-# Initialize the parser
+# Initialize parser
 parser = argparse.ArgumentParser()
-parser.add_argument("inputfolder", nargs='?', default="input", help="Input Folder")
-parser.add_argument("outputfolder", nargs='?', default="output", help="Output Folder")
+parser.add_argument("inputfolder", help="Input Folder", default="input", nargs='?')
+parser.add_argument("outputfolder", help="Output Folder", default="output", nargs='?')
 
-# Parse the arguments
 args = parser.parse_args()
 
 # Threshold for line to be considered as an initial staff line #
 threshold = 0.8
+accidentals = ['x', 'hash', 'b', 'symbol_bb', 'd']
+
 filename = 'model/model.sav'
 model = pickle.load(open(filename, 'rb'))
-accidentals = ['x', 'hash', 'b', 'symbol_bb', 'd']
-bounding_boxes_dict = {}
-global_counter = 0  # Global counter for image naming
-
-def draw_bounding_boxes(image, boundaries):
-    """
-    Draws bounding boxes on the image without labels.
-    
-    :param image: The image on which to draw.
-    :param boundaries: List of boundary tuples (x1, y1, x2, y2).
-    """
-    for boundary in boundaries:
-        x1, y1, x2, y2 = boundary
-        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-def save_bounding_box_areas(image, boundaries, labels, outputfolder, base_filename):
-    global global_counter  # Use the global counter
-
-    print(f"Starting to save bounding box areas and context images in {outputfolder}...")
-
-    if not boundaries:
-        print("No boundaries provided to save_bounding_box_areas.")
-        return
-
-    for boundary in boundaries:
-        print(f"Processing boundary with global counter {global_counter}: {boundary}")
-        x1, y1, x2, y2 = boundary
-        cropped_image = image[y1:y2, x1:x2]
-
-        # Check for valid crop
-        if cropped_image.size == 0:
-            print(f"Boundary resulted in an empty crop. Skipping.")
-            continue
-
-        # Save the cropped image
-        bbox_filename = f"smaller_image_{global_counter}.png"
-        bbox_filepath = os.path.join(outputfolder, bbox_filename)
-        print(f"Saving cropped image at {bbox_filepath}")
-        cv2.imwrite(bbox_filepath, cropped_image)
-
-        # Create a copy of the original image for context
-        image_with_context = image.copy()
-
-        # Highlight the specific bounding box in the context image
-        cv2.rectangle(image_with_context, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-        # Save the context image
-        context_filename = f"smaller_image_w_context_{global_counter}.png"
-        context_filepath = os.path.join(outputfolder, context_filename)
-        print(f"Saving context image at {context_filepath}")
-        cv2.imwrite(context_filepath, image_with_context)
-
-        global_counter += 1  # Increment the global counter
-
-    print("Finished saving bounding box areas and context images.")
-
-def process_and_display_image(inputfolder, fn, outputfolder):
-    cutted, clean_image = preprocessing(inputfolder, fn, None)
-    height_before = 0
-    all_boundaries = []
-    all_boundaries_offset_adjusted = []
-
-    for it in range(len(cutted)):
-        symbols_boundaries = segmentation(height_before, cutted[it])
-        symbols_boundaries.sort(key=lambda x: (x[0], x[1]))
-
-        for boundary in symbols_boundaries:
-            [[_, cutted_boundaries], x1, y1, x2, y2] = get_label_cutted_boundaries(boundary, height_before, cutted[it])
-            all_boundaries.extend(cutted_boundaries)
-            all_boundaries_offset_adjusted.append((x1, y1, x2, y2))
-
-        height_before += cutted[it].shape[0]
-
-    # Draw bounding boxes on the cleaned image without labels
-    image_with_boxes = clean_image.copy()
-    draw_bounding_boxes(image_with_boxes, all_boundaries_offset_adjusted)
-
-    # Save the annotated image with line removal in place
-    output_image_filepath = os.path.join(outputfolder, f'annotated_{fn}')
-    cv2.imwrite(output_image_filepath, image_with_boxes)
-
-    print(f"Annotated image saved at {output_image_filepath}")
-
-    # Save bounding box areas as separate images
-    base_filename = os.path.splitext(fn)[0]
-    save_bounding_box_areas(clean_image, all_boundaries_offset_adjusted, [], outputfolder, base_filename)
 
 def draw_continuous_segments(img, x, top, bottom, cleaned_img, color, thickness):
     """Helper function to draw only continuous black segments of a vertical line"""
@@ -143,40 +56,15 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
     debug_folder = f"{outputfolder}/debug_{file_prefix}"
     os.makedirs(debug_folder, exist_ok=True)
 
-    # Convert to color for visualizations
+    # Create a color version of the image for visualization
     vis_base = cv2.cvtColor(cleaned_img, cv2.COLOR_GRAY2BGR)
 
-    # Calculate staff heights (from first line to fifth line of each staff)
-    no_of_staves = len(staff_lines) // 5
-    staff_heights = []
-    staff_positions = []  # (top, bottom) for each staff
+    # Calculate histogram of vertical black pixels
+    col_histogram = np.sum(cleaned_img == 0, axis=0)
 
-    for i in range(no_of_staves):
-        top_line = staff_lines[i * 5]
-        bottom_line = staff_lines[i * 5 + 4]
-        staff_height = bottom_line - top_line
-        staff_heights.append(staff_height)
-        staff_positions.append((top_line, bottom_line))
-
-    if len(staff_heights) == 0:
-        return []
-
-    avg_staff_height = np.mean(staff_heights)
-    min_line_height = avg_staff_height * 0.95  # Within 5% of staff height
-    max_single_staff_height = avg_staff_height * 1.05
-    max_double_staff_height = avg_staff_height * 2.1  # For double barlines spanning 2 staves
-
-    print(f"  Staff detection: {no_of_staves} staves, avg height: {avg_staff_height:.1f} pixels")
-
-    # Create column histogram to detect vertical lines
-    col_histogram = np.zeros(width)
-    for c in range(width):
-        col_histogram[c] = np.sum(cleaned_img[:, c] == 0)  # Count black pixels
-
-    # Find candidate vertical lines (columns with high black pixel density)
-    threshold_density = height * 0.05  # Lowered to 5% to catch more candidates
+    # Find candidate columns with enough black pixels
+    threshold_density = height * 0.1  # At least 10% black pixels
     candidate_columns = []
-
     for c in range(width):
         if col_histogram[c] > threshold_density:
             candidate_columns.append(c)
@@ -203,25 +91,23 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
     cv2.imwrite(f"{debug_folder}/step1_all_candidates.png", step1_img)
     print(f"  Step 1: Found {len(candidate_columns)} candidate columns")
 
-    # Group consecutive columns into line segments
+    # Group nearby candidates into line segments
     line_segments = []
-    line_segments_extents = []  # Store (x, top, bottom) for each segment
-    if len(candidate_columns) > 0:
-        current_segment = [candidate_columns[0]]
-
-        for i in range(1, len(candidate_columns)):
-            if candidate_columns[i] == candidate_columns[i-1] + 1:
-                current_segment.append(candidate_columns[i])
-            else:
-                if len(current_segment) > 0:
-                    line_segments.append(current_segment)
-                current_segment = [candidate_columns[i]]
-
-        if len(current_segment) > 0:
+    current_segment = []
+    for i, col in enumerate(candidate_columns):
+        if len(current_segment) == 0:
+            current_segment.append(col)
+        elif col - current_segment[-1] <= 3:  # Within 3 pixels
+            current_segment.append(col)
+        else:
             line_segments.append(current_segment)
+            current_segment = [col]
+    if len(current_segment) > 0:
+        line_segments.append(current_segment)
 
     # Calculate extents for each segment and prepare visualization
     step2_img = vis_base.copy()
+    line_segments_extents = []
     for segment in line_segments:
         line_x = int(np.mean(segment))
         # Find all continuous black segments for this line
@@ -249,149 +135,28 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
     cv2.imwrite(f"{debug_folder}/step2_grouped_segments.png", step2_img)
     print(f"  Step 2: Grouped into {len(line_segments)} line segments")
 
-    # Analyze each line segment
-    after_width_filter = []  # Store (x, top, bottom)
-    after_height_filter = []  # Store (x, top, bottom, height)
-    after_alignment_filter = []  # Store (x, top, bottom, is_single)
-    after_curve_filter = []  # Store (x, top, bottom)
-    valid_barlines = []
-
-    for segment in line_segments:
-        if len(segment) == 0:
-            continue
-
-        # Get the center x-coordinate of this line segment
-        line_x = int(np.mean(segment))
-        line_width = len(segment)
-
-        # Find the vertical extent of this line
-        line_pixels = []
-        for x in segment:
-            for y in range(height):
-                if cleaned_img[y, x] == 0:
-                    line_pixels.append(y)
-
-        if len(line_pixels) == 0:
-            continue
-
-        line_top = min(line_pixels)
-        line_bottom = max(line_pixels)
-        line_height = line_bottom - line_top
-
-        # Check if line width is consistent (within 1-2 pixels throughout)
-        if line_width > 15:  # Too thick, probably not a barline
-            continue
-
-        after_width_filter.append((line_x, line_top, line_bottom))
-
-        # Check if line height matches staff height criteria
-        if line_height < min_line_height:
-            continue
-
-        after_height_filter.append((line_x, line_top, line_bottom, line_height))
-
-        # Check if line aligns with staff boundaries
-        valid_alignment = False
-        is_single_staff = False
-
-        for idx, (staff_top, staff_bottom) in enumerate(staff_positions):
-            # Single staff barline
-            tolerance = avg_staff_height * 0.15  # Increased tolerance to 15%
-            if (abs(line_top - staff_top) < tolerance and
-                abs(line_bottom - staff_bottom) < tolerance and
-                min_line_height <= line_height <= max_single_staff_height):
-                valid_alignment = True
-                is_single_staff = True
-                break
-
-            # Double staff barline (extends to next staff)
-            if idx < len(staff_positions) - 1:
-                next_staff_bottom = staff_positions[idx + 1][1]
-                if (abs(line_top - staff_top) < tolerance and
-                    abs(line_bottom - next_staff_bottom) < tolerance and
-                    line_height <= max_double_staff_height):
-                    valid_alignment = True
-                    is_single_staff = False
+    # Filter by width (barlines should be relatively thin)
+    max_barline_width = 15
+    after_width_filter = []
+    for x, top, bottom in line_segments_extents:
+        # Check width at multiple heights
+        widths = []
+        for y in range(top, bottom, max(1, (bottom - top) // 5)):
+            if y >= height:
+                continue
+            # Count consecutive black pixels horizontally
+            width_count = 0
+            for dx in range(-max_barline_width, max_barline_width):
+                if 0 <= x + dx < width and cleaned_img[y, x + dx] == 0:
+                    width_count += 1
+                else:
                     break
+            widths.append(width_count)
 
-        if not valid_alignment:
-            continue
-
-        after_alignment_filter.append((line_x, line_top, line_bottom, is_single_staff))
-
-        # For single staff height lines, check for curves at endpoints
-        has_curve = False
-        if is_single_staff:
-            check_radius = 5  # pixels to check around endpoints
-
-            # Check top endpoint
-            for x_offset in range(-check_radius, check_radius + 1):
-                check_x = line_x + x_offset
-                if 0 <= check_x < width:
-                    # Check pixels above the line top
-                    for y_offset in range(1, check_radius):
-                        check_y = line_top - y_offset
-                        if 0 <= check_y < height:
-                            # Look for horizontal black pixels (indicating a curve/note)
-                            if cleaned_img[check_y, check_x] == 0:
-                                # Check if this extends horizontally (curve indicator)
-                                horizontal_count = 0
-                                for hx in range(max(0, check_x - 3), min(width, check_x + 4)):
-                                    if cleaned_img[check_y, hx] == 0:
-                                        horizontal_count += 1
-                                if horizontal_count >= 3:
-                                    has_curve = True
-                                    break
-                    if has_curve:
-                        break
-
-            # Check bottom endpoint
-            if not has_curve:
-                for x_offset in range(-check_radius, check_radius + 1):
-                    check_x = line_x + x_offset
-                    if 0 <= check_x < width:
-                        # Check pixels below the line bottom
-                        for y_offset in range(1, check_radius):
-                            check_y = line_bottom + y_offset
-                            if 0 <= check_y < height:
-                                # Look for horizontal black pixels
-                                if cleaned_img[check_y, check_x] == 0:
-                                    horizontal_count = 0
-                                    for hx in range(max(0, check_x - 3), min(width, check_x + 4)):
-                                        if cleaned_img[check_y, hx] == 0:
-                                            horizontal_count += 1
-                                    if horizontal_count >= 3:
-                                        has_curve = True
-                                        break
-                        if has_curve:
-                            break
-
-        if has_curve:
-            continue  # Skip this line as it curves into a note
-
-        after_curve_filter.append((line_x, line_top, line_bottom))
-
-        # Check that the line has consistent width throughout its height
-        width_consistent = True
-        sample_points = np.linspace(line_top, line_bottom, min(20, int(line_height))).astype(int)
-
-        for sample_y in sample_points:
-            # Count black pixels at this height within the segment
-            black_count = 0
-            for x in range(max(0, line_x - line_width), min(width, line_x + line_width + 1)):
-                if cleaned_img[sample_y, x] == 0:
-                    black_count += 1
-
-            # Check if width varies too much
-            if abs(black_count - line_width) > 3:  # Slightly more lenient
-                width_consistent = False
-                break
-
-        if not width_consistent:
-            continue
-
-        # This is a valid barline!
-        valid_barlines.append((line_x, line_top, line_bottom))
+        if len(widths) > 0:
+            avg_width = np.mean(widths)
+            if avg_width <= max_barline_width:
+                after_width_filter.append((x, top, bottom))
 
     # STEP 3: Show after width filter
     step3_img = vis_base.copy()
@@ -399,6 +164,23 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
         draw_continuous_segments(step3_img, x, top, bottom, cleaned_img, (255, 255, 0), 2)
     cv2.imwrite(f"{debug_folder}/step3_after_width_filter.png", step3_img)
     print(f"  Step 3: {len(after_width_filter)} lines after width filter")
+
+    # Filter by height (barlines should span significant vertical distance)
+    if staff_lines is not None and len(staff_lines) > 0:
+        # Calculate typical staff spacing
+        staff_heights = []
+        for staff in staff_lines:
+            if isinstance(staff, (list, tuple)) and len(staff) >= 2:
+                staff_heights.append(staff[-1] - staff[0])
+        min_line_height = np.mean(staff_heights) * 0.6 if len(staff_heights) > 0 else height * 0.15
+    else:
+        min_line_height = height * 0.15
+
+    after_height_filter = []
+    for x, top, bottom in after_width_filter:
+        line_height = bottom - top
+        if line_height >= min_line_height:
+            after_height_filter.append((x, top, bottom, line_height))
 
     # STEP 4: Show after height filter
     step4_img = vis_base.copy()
@@ -408,34 +190,61 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
     cv2.imwrite(f"{debug_folder}/step4_after_height_filter.png", step4_img)
     print(f"  Step 4: {len(after_height_filter)} lines after height filter (min: {min_line_height:.1f})")
 
+    # Filter by alignment with staff lines
+    after_alignment_filter = []
+    for x, top, bottom, _ in after_height_filter:
+        # Check if line intersects with staff lines
+        intersects_staff = False
+        if staff_lines is not None:
+            for staff in staff_lines:
+                if isinstance(staff, (list, tuple)):
+                    for staff_y in staff:
+                        if top <= staff_y <= bottom:
+                            intersects_staff = True
+                            break
+                    if intersects_staff:
+                        break
+
+        # Check if it's a single barline or double barline
+        is_single = True
+        for x2, top2, bottom2, _ in after_height_filter:
+            if x != x2 and abs(x - x2) < 20:  # Close to another line
+                is_single = False
+                break
+
+        if intersects_staff:
+            after_alignment_filter.append((x, top, bottom, is_single))
+
     # STEP 5: Show after alignment filter
     step5_img = vis_base.copy()
-
-    # First, draw the staff boundaries that we're aligning against
-    for idx, (staff_top, staff_bottom) in enumerate(staff_positions):
-        # Draw staff boundaries in bright green
-        cv2.line(step5_img, (0, staff_top), (width, staff_top), (0, 255, 0), 2)
-        cv2.line(step5_img, (0, staff_bottom), (width, staff_bottom), (0, 255, 0), 2)
-        # Add staff number label
-        cv2.putText(step5_img, f"Staff {idx+1}", (10, staff_top + 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-        # Draw tolerance zones (semi-transparent)
-        tolerance = int(avg_staff_height * 0.15)
-        overlay = step5_img.copy()
-        cv2.rectangle(overlay, (0, staff_top - tolerance), (width, staff_top + tolerance),
-                     (0, 255, 0), -1)
-        cv2.rectangle(overlay, (0, staff_bottom - tolerance), (width, staff_bottom + tolerance),
-                     (0, 255, 0), -1)
-        cv2.addWeighted(overlay, 0.1, step5_img, 0.9, 0, step5_img)
-
-    # Then draw the lines that passed alignment filter
     for x, top, bottom, is_single in after_alignment_filter:
         color = (0, 128, 255) if is_single else (255, 128, 0)
         draw_continuous_segments(step5_img, x, top, bottom, cleaned_img, color, 2)
-
     cv2.imwrite(f"{debug_folder}/step5_after_alignment_filter.png", step5_img)
     print(f"  Step 5: {len(after_alignment_filter)} lines after alignment filter")
+
+    # Filter by straightness (barlines should be relatively straight)
+    after_curve_filter = []
+    for x, top, bottom, _ in after_alignment_filter:
+        # Check if the line deviates too much horizontally
+        x_positions = []
+        for y in range(top, bottom):
+            if y >= height:
+                continue
+            # Find x position of black pixel near this y
+            found = False
+            for dx in range(-5, 6):
+                if 0 <= x + dx < width and cleaned_img[y, x + dx] == 0:
+                    x_positions.append(x + dx)
+                    found = True
+                    break
+            if not found:
+                x_positions.append(x)
+
+        if len(x_positions) > 0:
+            x_std = np.std(x_positions)
+            if x_std < 5:  # Not too curvy
+                after_curve_filter.append((x, top, bottom))
 
     # STEP 6: Show after curve filter
     step6_img = vis_base.copy()
@@ -443,6 +252,9 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
         draw_continuous_segments(step6_img, x, top, bottom, cleaned_img, (0, 255, 128), 2)
     cv2.imwrite(f"{debug_folder}/step6_after_curve_filter.png", step6_img)
     print(f"  Step 6: {len(after_curve_filter)} lines after curve filter")
+
+    # Final valid barlines
+    valid_barlines = after_curve_filter
 
     # STEP 7: Show final valid barlines
     step7_img = vis_base.copy()
@@ -456,53 +268,45 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
 
 def create_measures_visualization(cleaned_img, measure_lines, staff_lines):
     """
-    Create a visualization with measure areas highlighted.
-    Returns a color image with measures outlined.
+    Create a visualization showing detected measures (regions between barlines).
     """
-    # Convert grayscale to color for visualization
-    if len(cleaned_img.shape) == 2:
-        vis_img = cv2.cvtColor(cleaned_img, cv2.COLOR_GRAY2BGR)
-    else:
-        vis_img = cleaned_img.copy()
+    # Convert to color
+    vis_img = cv2.cvtColor(cleaned_img, cv2.COLOR_GRAY2BGR)
+    height = cleaned_img.shape[0]
 
-    # Calculate staff positions
-    no_of_staves = len(staff_lines) // 5
-    staff_positions = []
+    # Draw staff lines in light gray
+    if staff_lines is not None:
+        for staff in staff_lines:
+            if isinstance(staff, (list, tuple)):
+                for y in staff:
+                    cv2.line(vis_img, (0, y), (vis_img.shape[1], y), (200, 200, 200), 1)
 
-    for i in range(no_of_staves):
-        top_line = staff_lines[i * 5]
-        bottom_line = staff_lines[i * 5 + 4]
-        staff_positions.append((top_line, bottom_line))
+    # Draw barlines in red
+    for x in measure_lines:
+        cv2.line(vis_img, (x, 0), (x, height), (0, 0, 255), 2)
 
-    if len(measure_lines) < 2:
-        return vis_img
-
-    # Draw measure areas between consecutive barlines
+    # Highlight measure regions with alternating colors
+    colors = [(255, 200, 200), (200, 255, 200), (200, 200, 255)]
     for i in range(len(measure_lines) - 1):
         x1 = measure_lines[i]
         x2 = measure_lines[i + 1]
+        color = colors[i % len(colors)]
 
-        # Draw rectangles for each staff
-        for staff_top, staff_bottom in staff_positions:
-            # Draw semi-transparent rectangle for measure area
-            overlay = vis_img.copy()
-            cv2.rectangle(overlay, (x1, staff_top), (x2, staff_bottom), (0, 255, 0), 2)
+        # Draw semi-transparent overlay
+        overlay = vis_img.copy()
+        cv2.rectangle(overlay, (x1, 0), (x2, height), color, -1)
+        cv2.addWeighted(overlay, 0.2, vis_img, 0.8, 0, vis_img)
 
-            # Add a light fill to the measure area
-            cv2.rectangle(overlay, (x1, staff_top), (x2, staff_bottom), (0, 255, 0), -1)
-            cv2.addWeighted(overlay, 0.1, vis_img, 0.9, 0, vis_img)
-
-            # Draw the border again to make it clearer
-            cv2.rectangle(vis_img, (x1, staff_top), (x2, staff_bottom), (0, 255, 0), 2)
-
-    # Draw the barlines themselves in red
-    for x in measure_lines:
-        cv2.line(vis_img, (x, 0), (x, cleaned_img.shape[0]), (0, 0, 255), 2)
+        # Add measure number
+        measure_num = i + 1
+        text_x = (x1 + x2) // 2
+        cv2.putText(vis_img, f"M{measure_num}", (text_x, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
 
     return vis_img
 
-def preprocessing(inputfolder, outputfolder, fn, f):
-      # Get image and its dimensions #
+def preprocessing(inputfolder, fn, f, outputfolder):
+    # Get image and its dimensions #
     height, width, in_img = preprocess_img('{}/{}'.format(inputfolder, fn))
 
     # Get line thinkness and list of staff lines #
@@ -528,59 +332,104 @@ def preprocessing(inputfolder, outputfolder, fn, f):
     cut_positions, cutted = cut_image_into_buckets(cleaned, staff_lines)
 
     # Get reference line for each bucket #
+    ref_lines, lines_spacing = get_ref_lines(cut_positions, staff_lines)
 
-    return cutted, cleaned
+    return cutted, ref_lines, lines_spacing
 
-def get_target_boundaries(label, cur_symbol, y2):
-    if label == 'b_8':
-        cutted_boundaries = cut_boundaries(cur_symbol, 2, y2)
-        label = 'a_8'
-    elif label == 'b_8_flipped':
-        cutted_boundaries = cut_boundaries(cur_symbol, 2, y2)
-        label = 'a_8_flipped'
-    elif label == 'b_16':
-        cutted_boundaries = cut_boundaries(cur_symbol, 4, y2)
-        label = 'a_16'
-    elif label == 'b_16_flipped':
-        cutted_boundaries = cut_boundaries(cur_symbol, 4, y2)
-        label = 'a_16_flipped'
-    else: 
-        cutted_boundaries = cut_boundaries(cur_symbol, 1, y2)
+def process_image(inputfolder, fn, f, outputfolder):
+    cutted, ref_lines, lines_spacing = preprocessing(inputfolder, fn, f, outputfolder)
 
-    return label, cutted_boundaries
+    last_acc = ''
+    last_num = ''
+    height_before = 0
 
-def get_label_cutted_boundaries(boundary, height_before, cutted):
-    # Get the current symbol #
-    print("Original boundary:", boundary) 
+    if len(cutted) > 1:
+        f.write('{\n')
 
-    x1, y1, x2, y2 = boundary
+    for it in range(len(cutted)):
+        f.write('[')
+        is_started = False
+        cur_img = cutted[it].copy()
 
-    cur_symbol = cutted[y1-height_before:y2+1-height_before, x1:x2+1]
+        symbols_boundries = segmentation(height_before, cutted[it])
+        symbols_boundries.sort(key = lambda x: (x[0], x[1]))
 
-    # Clean and cut #
-    cur_symbol = clean_and_cut(cur_symbol)
-    cur_symbol = 255 - cur_symbol
+        symbols = []
+        for boundry in symbols_boundries:
+            # Get the current symbol #
+            x1, y1, x2, y2 = boundry
+            cur_symbol = cutted[it][y1-height_before:y2+1-height_before, x1:x2+1]
 
-    # Start prediction of the current symbol #
-    feature = extract_hog_features(cur_symbol)
-    label = str(model.predict([feature])[0])
-    return [get_target_boundaries(label, cur_symbol, y2), x1, y1, x2, y2]
+            # Clean and cut #
+            cur_symbol = clean_and_cut(cur_symbol)
+            cur_symbol = 255 - cur_symbol
+
+            # Start prediction of the current symbol #
+            feature = extract_features(cur_symbol, 'hog')
+            label = str(model.predict([feature])[0])
+
+            if label == 'clef':
+                is_started = True
+
+            if label == 'b_8':
+                cutted_boundaries = cut_boundaries(cur_symbol, 2, y2)
+                label = 'a_8'
+            elif label == 'b_8_flipped':
+                cutted_boundaries = cut_boundaries(cur_symbol, 2, y2)
+                label = 'a_8_flipped'
+            elif label == 'b_16':
+                cutted_boundaries = cut_boundaries(cur_symbol, 4, y2)
+                label = 'a_16'
+            elif label == 'b_16_flipped':
+                cutted_boundaries = cut_boundaries(cur_symbol, 4, y2)
+                label = 'a_16_flipped'
+            else:
+                cutted_boundaries = cut_boundaries(cur_symbol, 1, y2)
+
+            for cutted_boundary in cutted_boundaries:
+                _, y1, _, y2 = cutted_boundary
+                if is_started == True and label != 'barline' and label != 'clef':
+                    text = text_operation(label, ref_lines[it], lines_spacing[it], y1, y2)
+
+                    if (label == 't_2' or label == 't_4') and last_num == '':
+                        last_num = text
+                    elif label in accidentals:
+                        last_acc = text
+                    else:
+                        if last_acc != '':
+                            text = text[0] + last_acc + text[1:]
+                            last_acc = ''
+
+                        if last_num != '':
+                            text = f'\meter<"{text}/{last_num}">'
+                            last_num = ''
+
+                        not_dot = label != 'dot'
+                        f.write(not_dot * ' ' + text)
+
+        height_before += cutted[it].shape[0]
+        f.write(' ]\n')
+
+    if len(cutted) > 1:
+        f.write('}')
 
 def main():
-    # Clean output folder before processing
-    if os.path.exists(args.outputfolder):
-        print(f"Cleaning output folder: {args.outputfolder}")
-        shutil.rmtree(args.outputfolder)
+    # Create output folder if it doesn't exist
+    try:
+        os.makedirs(args.outputfolder, exist_ok=True)
+    except OSError as error:
+        print("Error creating output folder:", error)
+        return
 
-    # Create fresh output folder
-    os.makedirs(args.outputfolder, exist_ok=True)
-    print(f"Created output folder: {args.outputfolder}\n")
-
-    saved_images_folder = os.path.join(args.outputfolder, 'saved_images')
-    os.makedirs(saved_images_folder, exist_ok=True)
+    # Write metadata file
+    with open(f"{args.outputfolder}/Output.txt", "w") as text_file:
+        text_file.write("Input Folder: %s\n" % args.inputfolder)
+        text_file.write("Output Folder: %s\n" % args.outputfolder)
+        text_file.write("Date: %s\n" % datetime.datetime.now())
 
     list_of_images = os.listdir(args.inputfolder)
-    for fn in list_of_images:
+
+    for i, fn in enumerate(list_of_images):
         # Check if the file is an image
         if not fn.lower().endswith(('.png', '.jpg', '.jpeg')):
             continue
@@ -590,16 +439,20 @@ def main():
             print("File does not exist:", fn)
             continue
 
-        # Process and display each image
-        try:
-            process_and_display_image(args.inputfolder, fn, saved_images_folder)
-        except Exception as e:
-            print(e)
-            print(f'Processing failed for {fn}')
+        # Open the output text file #
+        file_prefix = fn.split('.')[0]
+        f = open(f"{args.outputfolder}/{file_prefix}.txt", "w")
 
-    print('Processing completed for all images.') 
+        # Process each image separately #
+        try:
+            process_image(args.inputfolder, fn, f, args.outputfolder)
+            print(f"Successfully processed {fn}")
+        except Exception as e:
+            print(f'{args.inputfolder}/{fn} has been failed: {e}')
+
+        f.close()
+
+    print('Finished !!')
 
 if __name__ == "__main__":
     main()
-
-
