@@ -5,11 +5,12 @@ from helper_methods import *
 import argparse
 import os
 import datetime
+import cv2
 
 # Initialize parser
 parser = argparse.ArgumentParser()
-parser.add_argument("inputfolder", help = "Input File")
-parser.add_argument("outputfolder", help = "Output File")
+parser.add_argument("inputfolder", nargs='?', default="input", help = "Input File")
+parser.add_argument("outputfolder", nargs='?', default="output", help = "Output File")
 
 args = parser.parse_args()
 
@@ -25,19 +26,23 @@ filename = 'model/model.sav'
 model = pickle.load(open(filename, 'rb'))
 accidentals = ['x', 'hash', 'b', 'symbol_bb', 'd']
 
-def preprocessing(inputfolder, fn, f):
+def preprocessing(inputfolder, outputfolder, fn, f):
       # Get image and its dimensions #
     height, width, in_img = preprocess_img('{}/{}'.format(inputfolder, fn))
-    
+
     # Get line thinkness and list of staff lines #
     staff_lines_thicknesses, staff_lines = get_staff_lines(width, height, in_img, threshold)
 
     # Remove staff lines from original image #
     cleaned = remove_staff_lines(in_img, width, staff_lines, staff_lines_thicknesses)
-    
+
+    # Save the cleaned image (staff lines removed) #
+    file_prefix = fn.split('.')[0]
+    cv2.imwrite(f"{outputfolder}/{file_prefix}_cleaned.png", cleaned)
+
     # Get list of cutted buckets and cutting positions #
     cut_positions, cutted = cut_image_into_buckets(cleaned, staff_lines)
-    
+
     # Get reference line for each bucket #
     ref_lines, lines_spacing = get_ref_lines(cut_positions, staff_lines)
 
@@ -76,8 +81,8 @@ def get_label_cutted_boundaries(boundary, height_before, cutted):
 
     return get_target_boundaries(label, cur_symbol, y2)
 
-def process_image(inputfolder, fn, f):
-    cutted, ref_lines, lines_spacing = preprocessing(inputfolder, fn, f)
+def process_image(inputfolder, outputfolder, fn, f):
+    cutted, ref_lines, lines_spacing = preprocessing(inputfolder, outputfolder, fn, f)
 
     last_acc = ''
     last_num = ''
@@ -142,7 +147,7 @@ def main():
 
         # Process each image separately #
         try:
-            process_image(args.inputfolder, fn, f)
+            process_image(args.inputfolder, args.outputfolder, fn, f)
         except Exception as e:
             print(e)
             print(f'{args.inputfolder}-{fn} has been failed !!')
