@@ -325,9 +325,30 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
 
     # STEP 5: Show after alignment filter
     step5_img = vis_base.copy()
+
+    # First, draw the staff boundaries that we're aligning against
+    for idx, (staff_top, staff_bottom) in enumerate(staff_positions):
+        # Draw staff boundaries in bright green
+        cv2.line(step5_img, (0, staff_top), (width, staff_top), (0, 255, 0), 2)
+        cv2.line(step5_img, (0, staff_bottom), (width, staff_bottom), (0, 255, 0), 2)
+        # Add staff number label
+        cv2.putText(step5_img, f"Staff {idx+1}", (10, staff_top + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        # Draw tolerance zones (semi-transparent)
+        tolerance = int(avg_staff_height * 0.15)
+        overlay = step5_img.copy()
+        cv2.rectangle(overlay, (0, staff_top - tolerance), (width, staff_top + tolerance),
+                     (0, 255, 0), -1)
+        cv2.rectangle(overlay, (0, staff_bottom - tolerance), (width, staff_bottom + tolerance),
+                     (0, 255, 0), -1)
+        cv2.addWeighted(overlay, 0.1, step5_img, 0.9, 0, step5_img)
+
+    # Then draw the lines that passed alignment filter
     for x, top, bottom, is_single in after_alignment_filter:
         color = (0, 128, 255) if is_single else (255, 128, 0)
         draw_continuous_segments(step5_img, x, top, bottom, cleaned_img, color, 2)
+
     cv2.imwrite(f"{debug_folder}/step5_after_alignment_filter.png", step5_img)
     print(f"  Step 5: {len(after_alignment_filter)} lines after alignment filter")
 
