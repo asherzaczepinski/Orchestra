@@ -220,22 +220,6 @@ def detect_measure_lines(cleaned_img, staff_lines, staff_lines_thicknesses, widt
                 hits_bottom_staff = True
                 break
 
-        # REJECT if both top and bottom hit TOP staff lines
-        both_hit_top = False
-        if hits_top_staff:
-            for top_staff_y in top_staff_lines:
-                if abs(bottom - top_staff_y) <= tolerance:
-                    both_hit_top = True
-                    break
-
-        # REJECT if both top and bottom hit BOTTOM staff lines
-        both_hit_bottom = False
-        if hits_bottom_staff:
-            for bottom_staff_y in bottom_staff_lines:
-                if abs(top - bottom_staff_y) <= tolerance:
-                    both_hit_bottom = True
-                    break
-
         # Check if it's a single barline or double barline
         is_single = True
         for x2, top2, bottom2, _ in after_height_filter:
@@ -243,9 +227,9 @@ def detect_measure_lines(cleaned_img, staff_lines, staff_lines_thicknesses, widt
                 is_single = False
                 break
 
-        # Only accept if: top hits a top staff line AND bottom hits a bottom staff line
-        # AND not both hitting the same type of line
-        if hits_top_staff and hits_bottom_staff and not both_hit_top and not both_hit_bottom:
+        # Accept if: line STARTS at a top staff line AND ENDS at a bottom staff line
+        # (doesn't matter what it passes through in between)
+        if hits_top_staff and hits_bottom_staff:
             after_alignment_filter.append((x, top, bottom, is_single))
 
     # STEP 5: Show after alignment filter with staff lines highlighted
