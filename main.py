@@ -46,7 +46,7 @@ def draw_continuous_segments(img, x, top, bottom, cleaned_img, color, thickness)
     # Draw final segment
     cv2.line(img, (x, seg_start), (x, black_y[-1]), color, thickness)
 
-def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, file_prefix):
+def detect_measure_lines(cleaned_img, staff_lines, staff_lines_thicknesses, width, height, outputfolder, file_prefix):
     """
     Detect measure lines (barlines) in the cleaned image.
     Returns list of x-coordinates where valid barlines are found.
@@ -190,20 +190,51 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
     cv2.imwrite(f"{debug_folder}/step4_after_height_filter.png", step4_img)
     print(f"  Step 4: {len(after_height_filter)} lines after height filter (min: {min_line_height:.1f})")
 
-    # Filter by alignment with staff lines
+    # Filter by alignment with staff lines - ONLY use top and bottom staff lines
+    # Extract top and bottom staff lines for each staff
+    top_staff_lines = []
+    bottom_staff_lines = []
+    if staff_lines is not None and len(staff_lines) >= 5:
+        no_of_staffs = len(staff_lines) // 5
+        for staff_idx in range(no_of_staffs):
+            # First line of each staff (top)
+            top_staff_lines.append(staff_lines[staff_idx * 5])
+            # Last line of each staff (bottom)
+            bottom_staff_lines.append(staff_lines[staff_idx * 5 + 4])
+
     after_alignment_filter = []
+    tolerance = 2  # Small tolerance for "hitting" a staff line (2 pixels)
+
     for x, top, bottom, _ in after_height_filter:
-        # Check if line intersects with staff lines
-        intersects_staff = False
-        if staff_lines is not None:
-            for staff in staff_lines:
-                if isinstance(staff, (list, tuple)):
-                    for staff_y in staff:
-                        if top <= staff_y <= bottom:
-                            intersects_staff = True
-                            break
-                    if intersects_staff:
-                        break
+        # Check if the TOP of the line hits a TOP staff line
+        hits_top_staff = False
+        for top_staff_y in top_staff_lines:
+            if abs(top - top_staff_y) <= tolerance:
+                hits_top_staff = True
+                break
+
+        # Check if the BOTTOM of the line hits a BOTTOM staff line
+        hits_bottom_staff = False
+        for bottom_staff_y in bottom_staff_lines:
+            if abs(bottom - bottom_staff_y) <= tolerance:
+                hits_bottom_staff = True
+                break
+
+        # REJECT if both top and bottom hit TOP staff lines
+        both_hit_top = False
+        if hits_top_staff:
+            for top_staff_y in top_staff_lines:
+                if abs(bottom - top_staff_y) <= tolerance:
+                    both_hit_top = True
+                    break
+
+        # REJECT if both top and bottom hit BOTTOM staff lines
+        both_hit_bottom = False
+        if hits_bottom_staff:
+            for bottom_staff_y in bottom_staff_lines:
+                if abs(top - bottom_staff_y) <= tolerance:
+                    both_hit_bottom = True
+                    break
 
         # Check if it's a single barline or double barline
         is_single = True
@@ -212,14 +243,36 @@ def detect_measure_lines(cleaned_img, staff_lines, width, height, outputfolder, 
                 is_single = False
                 break
 
-        if intersects_staff:
+        # Only accept if: top hits a top staff line AND bottom hits a bottom staff line
+        # AND not both hitting the same type of line
+        if hits_top_staff and hits_bottom_staff and not both_hit_top and not both_hit_bottom:
             after_alignment_filter.append((x, top, bottom, is_single))
 
-    # STEP 5: Show after alignment filter
+    # STEP 5: Show after alignment filter with staff lines highlighted
     step5_img = vis_base.copy()
+
+    # Draw only the topmost and bottommost staff lines for each staff (in cyan)
+    # Use the EXACT detected thickness for each staff line
+    if staff_lines is not None and len(staff_lines) >= 5 and staff_lines_thicknesses is not None:
+        no_of_staffs = len(staff_lines) // 5
+        for staff_idx in range(no_of_staffs):
+            # Draw top line of this staff (first of the 5 lines) with its exact thickness
+            top_line_idx = staff_idx * 5
+            top_line_y = staff_lines[top_line_idx]
+            top_line_thickness = staff_lines_thicknesses[top_line_idx]
+            cv2.line(step5_img, (0, top_line_y), (width, top_line_y), (255, 255, 0), top_line_thickness)
+
+            # Draw bottom line of this staff (last of the 5 lines) with its exact thickness
+            bottom_line_idx = staff_idx * 5 + 4
+            bottom_line_y = staff_lines[bottom_line_idx]
+            bottom_line_thickness = staff_lines_thicknesses[bottom_line_idx]
+            cv2.line(step5_img, (0, bottom_line_y), (width, bottom_line_y), (255, 255, 0), bottom_line_thickness)
+
+    # Draw the filtered barlines
     for x, top, bottom, is_single in after_alignment_filter:
         color = (0, 128, 255) if is_single else (255, 128, 0)
         draw_continuous_segments(step5_img, x, top, bottom, cleaned_img, color, 2)
+
     cv2.imwrite(f"{debug_folder}/step5_after_alignment_filter.png", step5_img)
     print(f"  Step 5: {len(after_alignment_filter)} lines after alignment filter")
 
@@ -321,7 +374,7 @@ def preprocessing(inputfolder, fn, f, outputfolder):
 
     # Detect measure lines in the cleaned image #
     print(f"Processing {fn}...")
-    measure_lines = detect_measure_lines(cleaned, staff_lines, width, height, outputfolder, file_prefix)
+    measure_lines = detect_measure_lines(cleaned, staff_lines, staff_lines_thicknesses, width, height, outputfolder, file_prefix)
 
     # Create and save visualization with measures highlighted #
     measures_visualization = create_measures_visualization(cleaned, measure_lines, staff_lines)
